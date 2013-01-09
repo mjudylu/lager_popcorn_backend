@@ -20,6 +20,27 @@
                 node_version  :: string()
 }).
 
+-record(message, {message_id                   :: string(),
+                  is_group            = false  :: boolean(),
+                  is_gae              = false  :: boolean(),
+                  sender_token                 :: string(),
+                  recipient_token              :: string(),
+                  created_time_client          :: string(),
+                  created_time_server          :: string(),
+                  body                         :: string(),
+                  ttl                          :: pos_integer(),
+                  dor                 = false  :: boolean(),
+                  status                       :: string(),
+                  attachment                   :: xmpp_message:attach_content(),
+                  attachment_count    = 0      :: non_neg_integer(),
+                  attachment_size     = 0      :: non_neg_integer(),
+                              attachment_message_id        :: string(),
+                  is_recalled         = false  :: boolean(),
+                  sort_number                  :: pos_integer(),
+                  sort_series                  :: pos_integer(),
+                  push_alert          = opaque :: atom()
+                 }).
+
 init(Params) ->
     Level        = proplists:get_value(level, Params, debug),
     Popcorn_Host = proplists:get_value(popcorn_host, Params, "localhost"),
@@ -48,7 +69,8 @@ handle_call(_Request, State) ->
 
 handle_event({lager_event, #lager_event{module=Module, function=Function, line=Line,
                                         pid=Pid, message=Message, level=Level}}, State) ->
-    Encoded_Message = encode_protobuffs_message(node(), State#state.node_role, State#state.node_version, Level, "", "", Message,
+    Msg = [filter_msg_obj(E) || E <- Message],
+    Encoded_Message = encode_protobuffs_message(node(), State#state.node_role, State#state.node_version, Level, "", "", Msg,
                                                 Module, Function, Line, Pid),
 
     gen_udp:send(State#state.socket,
@@ -94,3 +116,21 @@ opt(Value, _) when is_atom(Value)    -> list_to_binary(atom_to_list(Value));
 opt(Value, _) when is_binary(Value)  -> Value;
 opt(Value, _) when is_list(Value)    -> list_to_binary(Value);
 opt(_, Default) -> Default.
+
+%% Filter out plain msg text
+filter_msg_obj(Arg) when is_list(Arg) ->
+    case string:str(Arg, "{message,") of
+        0 -> Arg;
+        Begin_Idx ->
+            {Prefix, Rest} = lists:split(Begin_Idx-1, Arg),
+            End_Idx = string:chr(Rest, $}),
+            {Msg_Str, Suffix} = lists:split(End_Idx, Rest),
+            Msg = string:tokens(Msg_Str, ","),
+            case length(Msg) of
+                #message.push_alert ->
+                    {Left, [Body|Right]} = lists:split(#message.body-1, Msg),
+                    {true, Prefix ++ string:join(Left ++ ["\"" ++ string:chars($x, 5) ++ integer_to_list(length(Body)-2) ++ "\""] ++ Right, ",") ++ Suffix};
+                _ -> Arg
+            end
+    end;
+filter_msg_obj(Arg) -> Arg.
